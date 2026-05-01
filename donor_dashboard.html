@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Donor Dashboard — LifeDrop</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+</head>
+<body>
+<div class="container">
+    <nav>
+        <a href="#" class="logo">🩸 Life<span>Drop</span></a>
+        <div class="nav-links">
+            <span id="userName" style="color: white; font-weight: 600;"></span>
+            <div class="notif-bell" onclick="toggleNotifs()" style="position:relative;">
+                🔔<span class="notif-badge" id="notifBadge" style="display:none;">0</span>
+                <div class="notif-dropdown" id="notifDropdown"></div>
+            </div>
+            <a href="#" onclick="logout()">Logout</a>
+        </div>
+    </nav>
+    <div id="alertMsg" class="alert"></div>
+
+    <div class="dashboard-grid">
+        <!-- Left Column -->
+        <div>
+            <!-- Eligibility -->
+            <div class="glass-card" style="margin-bottom:1.5rem;">
+                <h2>Your Status</h2>
+                <div id="eligibilityStatus" style="margin-top:1rem;padding:1.25rem;background:rgba(0,0,0,0.3);border-radius:12px;text-align:center;">
+                    <h3 id="eligibilityText" style="margin-bottom:0.3rem;color:#22c55e;">Checking...</h3>
+                    <p id="eligibilitySubtext" style="color:var(--text-muted);font-size:0.85rem;"></p>
+                </div>
+                <div style="margin-top:1.25rem;">
+                    <h3 style="font-size:1rem;">Log Voluntary Donation</h3>
+                    <p style="color:var(--text-muted);font-size:0.8rem;margin:0.3rem 0 0.75rem;">Donated independently? Log it here.</p>
+                    <button onclick="logDonation(null)" class="btn btn-primary btn-sm" id="logBtn" style="width:100%;">Log Donation (1 Unit)</button>
+                </div>
+            </div>
+
+            <!-- Rewards -->
+            <div class="glass-card" style="margin-bottom:1.5rem;">
+                <h2>Your Badges</h2>
+                <p style="color:var(--text-muted);font-size:0.8rem;margin-top:0.25rem;">Earn badges by donating blood</p>
+                <div class="reward-grid" id="rewardGrid"></div>
+                <p style="text-align:center;margin-top:0.75rem;font-size:0.85rem;color:var(--text-muted);">
+                    Total Donations: <strong id="donationCountDisplay" style="color:var(--amber);">0</strong>
+                </p>
+            </div>
+
+            <!-- Donation History -->
+            <div class="glass-card">
+                <h2>Donation History</h2>
+                <div class="timeline" id="historyTimeline" style="max-height:250px;overflow-y:auto;">
+                    <p style="color:var(--text-muted);font-size:0.85rem;">Loading...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Column -->
+        <div>
+            <!-- Map -->
+            <div class="glass-card" style="margin-bottom:1.5rem;">
+                <div class="section-header">
+                    <h2>Emergency Map</h2>
+                    <span class="badge badge-urgent" id="pendingCount">0 active</span>
+                </div>
+                <div id="donorMap" class="map-container"></div>
+            </div>
+
+            <!-- Active Requests -->
+            <div class="glass-card">
+                <div class="section-header">
+                    <h2>Active Requests</h2>
+                    <button class="btn btn-outline btn-sm" onclick="loadRequests()">Refresh</button>
+                </div>
+                <div id="requestsList" style="max-height:350px;overflow-y:auto;"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="js/app.js"></script>
+<script>
+    checkAuth();
+    let isEligible = false;
+    let donorMap = null;
+    let userBloodGroup = '';
+
+    async function loadProfile() {
+        try {
+            const res = await fetch(`${API_URL}/profile`, { headers: { 'Authorization': `Bearer ${getToken()}` } });
+            const user = await res.json();
+            document.getElementById('userName').textContent = `Hi, ${user.name}`;
+            userBloodGroup = user.blood_group;
+
+            const statusEl = document.getElementById('eligibilityText');
+            const subEl = document.getElementById('eligibilitySubtext');
+            const logBtn = document.getElementById('logBtn');
+
+            if (!user.last_donation_date) {
+                isEligible = true;
+                statusEl.textContent = '✅ Eligible to Donate!';
+                statusEl.style.color = '#22c55e';
+                subEl.textContent = 'No recent donations on record.';
+            } else {
+                const diffDays = Math.ceil(Math.abs(new Date() - new Date(user.last_donation_date)) / 86400000);
+                if (diffDays > 90) {
+                    isEligible = true;
+                    statusEl.textContent = '✅ Eligible to Donate!';
+                    statusEl.style.color = '#22c55e';
+                    subEl.textContent = `Last donation: ${diffDays} days ago.`;
+                } else {
+                    isEligible = false;
+                    statusEl.textContent = '⏳ Cooldown Active';
+                    statusEl.style.color = '#ef4444';
+                    subEl.textContent = `Wait ${90 - diffDays} more days.`;
+                    logBtn.disabled = true;
+                }
+            }
+
+            // Badges
+            const count = user.donation_count || 0;
+            document.getElementById('donationCountDisplay').textContent = count;
+            const badges = getBadges(count);
+            document.getElementById('rewardGrid').innerHTML = badges.map(b =>
+                `<div class="reward-item ${b.earned ? 'earned' : 'locked'}">
+                    <div class="reward-icon">${b.icon}</div>
+                    <div class="reward-name">${b.name}</div>
+                </div>`
+            ).join('');
+
+            // Init map with user location
+            if (user.latitude && user.longitude) initMap(user.latitude, user.longitude);
+            else {
+                try {
+                    const loc = await getUserLocation();
+                    initMap(loc.lat, loc.lng);
+                } catch(e) { initMap(20.5937, 78.9629); } // Default India center
+            }
+        } catch(err) { console.error(err); }
+    }
+
+    function initMap(lat, lng) {
+        if (donorMap) return;
+        donorMap = L.map('donorMap').setView([lat, lng], 12);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap'
+        }).addTo(donorMap);
+        L.marker([lat, lng]).addTo(donorMap).bindPopup('📍 You are here');
+        loadRequestsOnMap();
+    }
+
+    async function loadRequestsOnMap() {
+        try {
+            const res = await fetch(`${API_URL}/requests`);
+            const requests = await res.json();
+            requests.forEach(r => {
+                if (r.latitude && r.longitude) {
+                    const color = r.urgency === 'critical' ? '#ef4444' : r.urgency === 'high' ? '#f59e0b' : '#38bdf8';
+                    const icon = L.divIcon({
+                        html: `<div style="background:${color};width:14px;height:14px;border-radius:50%;border:2px solid white;box-shadow:0 0 8px ${color};"></div>`,
+                        iconSize: [14, 14], className: ''
+                    });
+                    L.marker([r.latitude, r.longitude], { icon })
+                        .addTo(donorMap)
+                        .bindPopup(`<b>${r.blood_group}</b> — ${r.units_required} unit(s)<br>Urgency: ${r.urgency}<br>${r.name}`);
+                }
+            });
+        } catch(e) {}
+    }
+
+    async function loadRequests() {
+        try {
+            const res = await fetch(`${API_URL}/requests`);
+            const requests = await res.json();
+            const list = document.getElementById('requestsList');
+            document.getElementById('pendingCount').textContent = `${requests.length} active`;
+            
+            if (requests.length === 0) {
+                list.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:1rem;">No active requests 🎉</p>';
+                return;
+            }
+            list.innerHTML = requests.map(r => `
+                <div class="list-item" style="flex-direction:column;align-items:stretch;gap:0.5rem;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;">
+                        <h4>${r.name}</h4>
+                        <span class="badge ${r.urgency === 'critical' ? 'badge-urgent' : r.urgency === 'high' ? 'badge-warning' : 'badge-normal'}">
+                            ${r.urgency.toUpperCase()}
+                        </span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;align-items:center;">
+                        <span style="font-size:0.85rem;color:var(--text-muted);">
+                            ${r.blood_group} • ${r.units_required} unit(s) • 📞 ${r.phone}
+                        </span>
+                        <button class="btn btn-primary btn-sm" onclick="logDonation(${r.id})" ${!isEligible ? 'disabled' : ''}>
+                            Donate
+                        </button>
+                    </div>
+                    ${r.hospital_name ? `<span style="font-size:0.8rem;color:var(--text-muted);">🏥 ${r.hospital_name}</span>` : ''}
+                    <span style="font-size:0.75rem;color:var(--text-muted);">${timeAgo(r.created_at)}</span>
+                </div>
+            `).join('');
+        } catch(err) { console.error(err); }
+    }
+
+    async function loadHistory() {
+        try {
+            const res = await fetch(`${API_URL}/donations/history`, {
+                headers: { 'Authorization': `Bearer ${getToken()}` }
+            });
+            const data = await res.json();
+            const tl = document.getElementById('historyTimeline');
+            if (data.length === 0) {
+                tl.innerHTML = '<p style="color:var(--text-muted);font-size:0.85rem;">No donations yet. Be a hero!</p>';
+                return;
+            }
+            tl.innerHTML = data.map(d => `
+                <div class="timeline-item">
+                    <div class="tl-date">${new Date(d.donation_date).toLocaleDateString()}</div>
+                    <div class="tl-info">${d.units} unit(s) donated ${d.request_blood_group ? '• ' + d.request_blood_group : ''} ${d.hospital_name ? '• 🏥 ' + d.hospital_name : ''}</div>
+                </div>
+            `).join('');
+        } catch(e) {}
+    }
+
+    async function logDonation(requestId) {
+        if (!isEligible) return showAlert('You are not currently eligible (3-month cooldown).');
+        try {
+            const res = await fetch(`${API_URL}/donations`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${getToken()}` },
+                body: JSON.stringify({ request_id: requestId, units: 1 })
+            });
+            const data = await res.json();
+            if (res.ok) {
+                showAlert(data.message, 'success');
+                loadProfile();
+                loadRequests();
+                loadHistory();
+            } else showAlert(data.error);
+        } catch(err) { showAlert('Server error'); }
+    }
+
+    function toggleNotifs() {
+        const dd = document.getElementById('notifDropdown');
+        dd.classList.toggle('active');
+        if (dd.classList.contains('active')) {
+            loadNotifications(dd, document.getElementById('notifBadge'));
+            markAllRead();
+        }
+    }
+
+    // Close notif dropdown on outside click
+    document.addEventListener('click', e => {
+        if (!e.target.closest('.notif-bell')) {
+            document.getElementById('notifDropdown').classList.remove('active');
+        }
+    });
+
+    // Socket events
+    socket.on('emergency_alert', () => { loadRequests(); loadNotifications(null, document.getElementById('notifBadge')); });
+    socket.on('new_request', () => loadRequests());
+
+    // Init
+    loadProfile();
+    loadRequests();
+    loadHistory();
+    loadNotifications(null, document.getElementById('notifBadge'));
+    setInterval(() => { loadRequests(); loadNotifications(null, document.getElementById('notifBadge')); }, 30000);
+</script>
+</body>
+</html>

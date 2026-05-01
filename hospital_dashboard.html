@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hospital Dashboard — LifeDrop</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+</head>
+<body>
+<div class="container">
+    <nav>
+        <a href="#" class="logo">🩸 Life<span>Drop</span> — Hospital</a>
+        <div class="nav-links">
+            <span id="userName" style="color:white;font-weight:600;"></span>
+            <div class="notif-bell" onclick="toggleNotifs()" style="position:relative;">
+                🔔<span class="notif-badge" id="notifBadge" style="display:none;">0</span>
+                <div class="notif-dropdown" id="notifDropdown"></div>
+            </div>
+            <a href="#" onclick="logout()">Logout</a>
+        </div>
+    </nav>
+    <div id="alertMsg" class="alert"></div>
+
+    <div class="dashboard-grid">
+        <!-- Create Request -->
+        <div>
+            <div class="glass-card" style="margin-bottom:1.5rem;">
+                <h2>Create Blood Request</h2>
+                <p style="color:var(--text-muted);font-size:0.85rem;margin:0.3rem 0 1rem;">Request blood on behalf of a patient.</p>
+                <form id="hospitalRequestForm">
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;">
+                        <div class="form-group">
+                            <label>Blood Group</label>
+                            <select id="hReqBlood" required>
+                                <option value="A+">A+</option><option value="A-">A-</option>
+                                <option value="B+">B+</option><option value="B-">B-</option>
+                                <option value="AB+">AB+</option><option value="AB-">AB-</option>
+                                <option value="O+">O+</option><option value="O-">O-</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Units (1-4)</label>
+                            <input type="number" id="hReqUnits" min="1" max="4" required value="1">
+                        </div>
+                    </div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;">
+                        <div class="form-group">
+                            <label>Urgency</label>
+                            <select id="hReqUrgency">
+                                <option value="critical">🔴 Critical</option>
+                                <option value="high" selected>🟡 High</option>
+                                <option value="normal">🔵 Normal</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Contact Phone</label>
+                            <input type="text" id="hReqPhone" placeholder="Hospital contact">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Notes</label>
+                        <textarea id="hReqNotes" placeholder="Patient details, room no, etc." rows="2"></textarea>
+                    </div>
+                    <button type="submit" class="btn btn-primary" id="hReqBtn">📡 Broadcast Request</button>
+                </form>
+            </div>
+
+            <!-- My Requests -->
+            <div class="glass-card">
+                <h2>Our Requests</h2>
+                <div id="hospitalRequests" style="margin-top:1rem;max-height:350px;overflow-y:auto;">
+                    <p style="color:var(--text-muted);font-size:0.85rem;">Loading...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Column -->
+        <div>
+            <!-- Map with blood banks -->
+            <div class="glass-card" style="margin-bottom:1.5rem;">
+                <h2>Nearby Blood Banks</h2>
+                <div id="hospitalMap" class="map-container"></div>
+            </div>
+
+            <!-- Blood bank inventory -->
+            <div class="glass-card">
+                <h2>Blood Bank Stock</h2>
+                <p style="color:var(--text-muted);font-size:0.85rem;margin:0.3rem 0 1rem;">Real-time inventory from nearby blood banks.</p>
+                <div id="bankStockList" style="max-height:300px;overflow-y:auto;">
+                    <p style="color:var(--text-muted);font-size:0.85rem;">Loading...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="js/app.js"></script>
+<script>
+    checkAuth();
+    let hospitalMap = null;
+    let hospitalName = '';
+
+    async function loadProfile() {
+        try {
+            const res = await fetch(`${API_URL}/profile`, { headers: { 'Authorization': `Bearer ${getToken()}` } });
+            const user = await res.json();
+            hospitalName = user.name;
+            document.getElementById('userName').textContent = user.name;
+            if (user.latitude && user.longitude) initMap(user.latitude, user.longitude);
+            else {
+                try { const loc = await getUserLocation(); initMap(loc.lat, loc.lng); }
+                catch(e) { initMap(20.5937, 78.9629); }
+            }
+        } catch(e) {}
+    }
+
+    function initMap(lat, lng) {
+        if (hospitalMap) return;
+        hospitalMap = L.map('hospitalMap').setView([lat, lng], 11);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(hospitalMap);
+        L.marker([lat, lng]).addTo(hospitalMap).bindPopup('🏥 Your Hospital');
+        loadBankLocations();
+    }
+
+    async function loadBankLocations() {
+        try {
+            const res = await fetch(`${API_URL}/inventory/public`);
+            const data = await res.json();
+            // Group by bank
+            const banks = {};
+            data.forEach(row => {
+                if (!banks[row.id]) banks[row.id] = { ...row, groups: [] };
+                banks[row.id].groups.push({ bg: row.blood_group, units: row.units_available });
+            });
+            Object.values(banks).forEach(bank => {
+                if (bank.latitude && bank.longitude && hospitalMap) {
+                    const icon = L.divIcon({
+                        html: '<div style="background:#38bdf8;width:12px;height:12px;border-radius:50%;border:2px solid white;box-shadow:0 0 6px #38bdf8;"></div>',
+                        iconSize: [12, 12], className: ''
+                    });
+                    const stockInfo = bank.groups.map(g => `${g.bg}: ${g.units}`).join(', ');
+                    L.marker([bank.latitude, bank.longitude], { icon }).addTo(hospitalMap)
+                        .bindPopup(`<b>${bank.name}</b><br>${stockInfo}`);
+                }
+            });
+        } catch(e) {}
+    }
+
+    async function loadBankStock() {
+        try {
+            const res = await fetch(`${API_URL}/inventory/public`);
+            const data = await res.json();
+            const el = document.getElementById('bankStockList');
+            if (data.length === 0) {
+                el.innerHTML = '<p style="color:var(--text-muted);font-size:0.85rem;">No blood banks registered yet.</p>';
+                return;
+            }
+            // Group by bank
+            const banks = {};
+            data.forEach(row => {
+                if (!banks[row.id]) banks[row.id] = { name: row.name, phone: row.phone, city: row.city, groups: [] };
+                banks[row.id].groups.push({ bg: row.blood_group, units: row.units_available });
+            });
+            el.innerHTML = Object.values(banks).map(bank => `
+                <div class="list-item" style="flex-direction:column;align-items:stretch;gap:0.4rem;">
+                    <div style="display:flex;justify-content:space-between;">
+                        <h4 style="font-size:0.9rem;">${bank.name}</h4>
+                        <span style="font-size:0.78rem;color:var(--text-muted);">📞 ${bank.phone}</span>
+                    </div>
+                    <div style="display:flex;flex-wrap:wrap;gap:0.4rem;">
+                        ${bank.groups.map(g => `<span class="badge ${g.units < 5 ? 'badge-urgent' : 'badge-success'}">${g.bg}: ${g.units}</span>`).join('')}
+                    </div>
+                </div>
+            `).join('');
+        } catch(e) {}
+    }
+
+    // Create request
+    document.getElementById('hospitalRequestForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const btn = document.getElementById('hReqBtn');
+        btn.innerHTML = '<span class="spinner"></span> Broadcasting...';
+        btn.disabled = true;
+
+        let loc = { lat: null, lng: null };
+        try { loc = await getUserLocation(); } catch(e) {}
+
+        try {
+            const res = await fetch(`${API_URL}/requests`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${getToken()}` },
+                body: JSON.stringify({
+                    units_required: parseInt(document.getElementById('hReqUnits').value),
+                    blood_group: document.getElementById('hReqBlood').value,
+                    urgency: document.getElementById('hReqUrgency').value,
+                    latitude: loc.lat,
+                    longitude: loc.lng,
+                    hospital_name: hospitalName,
+                    contact_phone: document.getElementById('hReqPhone').value || null,
+                    notes: document.getElementById('hReqNotes').value || null
+                })
+            });
+            const data = await res.json();
+            if (res.ok) {
+                showAlert(`Request sent! ${data.donors_notified} donors notified.`, 'success');
+                loadMyRequests();
+                document.getElementById('hospitalRequestForm').reset();
+            } else showAlert(data.error);
+        } catch(err) { showAlert('Server error'); }
+        btn.innerHTML = '📡 Broadcast Request';
+        btn.disabled = false;
+    });
+
+    async function loadMyRequests() {
+        try {
+            const res = await fetch(`${API_URL}/requests/mine`, { headers: { 'Authorization': `Bearer ${getToken()}` } });
+            const data = await res.json();
+            const el = document.getElementById('hospitalRequests');
+            if (data.length === 0) {
+                el.innerHTML = '<p style="color:var(--text-muted);font-size:0.85rem;">No requests yet.</p>';
+                return;
+            }
+            el.innerHTML = data.map(r => `
+                <div class="list-item" style="flex-direction:column;align-items:stretch;gap:0.4rem;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;">
+                        <span><strong>${r.blood_group}</strong> • ${r.units_required} unit(s)</span>
+                        <span class="badge ${r.status === 'fulfilled' ? 'badge-success' : r.status === 'cancelled' ? 'badge-normal' : 'badge-urgent'}">
+                            ${r.status === 'fulfilled' ? '✅ Fulfilled' : r.status === 'cancelled' ? 'Cancelled' : `${r.units_fulfilled}/${r.units_required}`}
+                        </span>
+                    </div>
+                    <span style="font-size:0.75rem;color:var(--text-muted);">${r.urgency.toUpperCase()} • ${timeAgo(r.created_at)}</span>
+                    ${r.status === 'pending' ? `<button class="btn btn-outline btn-sm" onclick="cancelReq(${r.id})">Cancel</button>` : ''}
+                </div>
+            `).join('');
+        } catch(e) {}
+    }
+
+    async function cancelReq(id) {
+        try {
+            await fetch(`${API_URL}/requests/${id}/cancel`, { method: 'PUT', headers: { 'Authorization': `Bearer ${getToken()}` } });
+            showAlert('Cancelled.', 'success');
+            loadMyRequests();
+        } catch(e) {}
+    }
+
+    function toggleNotifs() {
+        const dd = document.getElementById('notifDropdown');
+        dd.classList.toggle('active');
+        if (dd.classList.contains('active')) { loadNotifications(dd, document.getElementById('notifBadge')); markAllRead(); }
+    }
+    document.addEventListener('click', e => { if (!e.target.closest('.notif-bell')) document.getElementById('notifDropdown').classList.remove('active'); });
+
+    socket.on('request_fulfilled', () => loadMyRequests());
+    socket.on('inventory_updated', () => loadBankStock());
+
+    loadProfile();
+    loadMyRequests();
+    loadBankStock();
+    loadNotifications(null, document.getElementById('notifBadge'));
+</script>
+</body>
+</html>
