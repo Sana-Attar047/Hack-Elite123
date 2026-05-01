@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Blood Bank Dashboard — LifeDrop</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="container">
+    <nav>
+        <a href="#" class="logo">🩸 Life<span>Drop</span> — Blood Bank</a>
+        <div class="nav-links">
+            <span id="userName" style="color:white;font-weight:600;"></span>
+            <div class="notif-bell" onclick="toggleNotifs()" style="position:relative;">
+                🔔<span class="notif-badge" id="notifBadge" style="display:none;">0</span>
+                <div class="notif-dropdown" id="notifDropdown"></div>
+            </div>
+            <a href="#" onclick="logout()">Logout</a>
+        </div>
+    </nav>
+    <div id="alertMsg" class="alert"></div>
+
+    <div class="dashboard-grid">
+        <!-- Update Inventory -->
+        <div>
+            <div class="glass-card" style="margin-bottom:1.5rem;">
+                <h2>Update Inventory</h2>
+                <p style="color:var(--text-muted);font-size:0.85rem;margin:0.3rem 0 1rem;">Keep stock levels current so patients find you.</p>
+                <form id="inventoryForm">
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;">
+                        <div class="form-group">
+                            <label>Blood Group</label>
+                            <select id="invBlood" required>
+                                <option value="A+">A+</option><option value="A-">A-</option>
+                                <option value="B+">B+</option><option value="B-">B-</option>
+                                <option value="AB+">AB+</option><option value="AB-">AB-</option>
+                                <option value="O+">O+</option><option value="O-">O-</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Units Available</label>
+                            <input type="number" id="invUnits" min="0" required value="0">
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Update Stock</button>
+                </form>
+            </div>
+
+            <!-- Active Emergency Requests -->
+            <div class="glass-card">
+                <h2>Matching Requests</h2>
+                <p style="color:var(--text-muted);font-size:0.85rem;margin:0.3rem 0 1rem;">Emergencies needing blood you have in stock.</p>
+                <div id="matchingRequests" style="max-height:350px;overflow-y:auto;">
+                    <p style="color:var(--text-muted);font-size:0.85rem;">Loading...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Inventory Visual -->
+        <div>
+            <div class="glass-card" style="margin-bottom:1.5rem;">
+                <div class="section-header">
+                    <h2>Current Stock</h2>
+                    <span class="badge badge-normal" id="totalUnits">0 total</span>
+                </div>
+                <div id="inventoryBars" style="margin-top:1rem;"></div>
+            </div>
+
+            <!-- Low Stock Alerts -->
+            <div class="glass-card">
+                <h2>⚠️ Low Stock Alerts</h2>
+                <div id="lowStockAlerts" style="margin-top:1rem;">
+                    <p style="color:var(--text-muted);font-size:0.85rem;">Checking...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<script src="js/app.js"></script>
+<script>
+    checkAuth();
+    const MAX_BAR = 50; // max units for bar width reference
+
+    async function loadProfile() {
+        try {
+            const res = await fetch(`${API_URL}/profile`, { headers: { 'Authorization': `Bearer ${getToken()}` } });
+            const user = await res.json();
+            document.getElementById('userName').textContent = `${user.name}`;
+        } catch(e) {}
+    }
+
+    async function loadInventory() {
+        try {
+            const res = await fetch(`${API_URL}/inventory`, { headers: { 'Authorization': `Bearer ${getToken()}` } });
+            const data = await res.json();
+            const barsEl = document.getElementById('inventoryBars');
+            const lowEl = document.getElementById('lowStockAlerts');
+            
+            let total = 0;
+            let lowItems = [];
+
+            barsEl.innerHTML = data.map(item => {
+                total += item.units_available;
+                const pct = Math.min((item.units_available / MAX_BAR) * 100, 100);
+                const level = item.units_available <= 2 ? 'low' : item.units_available <= 10 ? 'medium' : 'high';
+                if (item.units_available < 5) lowItems.push(item);
+                return `
+                    <div class="inv-bar-wrapper">
+                        <div class="inv-bar-label">
+                            <span><strong>${item.blood_group}</strong></span>
+                            <span>${item.units_available} units</span>
+                        </div>
+                        <div class="inv-bar-track">
+                            <div class="inv-bar-fill ${level}" style="width:${Math.max(pct, 3)}%;">${item.units_available}</div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            document.getElementById('totalUnits').textContent = `${total} total units`;
+
+            if (lowItems.length === 0) {
+                lowEl.innerHTML = '<p style="color:var(--green);font-size:0.85rem;">✅ All groups are well-stocked!</p>';
+            } else {
+                lowEl.innerHTML = lowItems.map(i => `
+                    <div class="list-item">
+                        <span style="font-weight:600;">${i.blood_group}</span>
+                        <span class="badge badge-urgent">Only ${i.units_available} units!</span>
+                    </div>
+                `).join('');
+            }
+        } catch(err) { console.error(err); }
+    }
+
+    async function loadMatchingRequests() {
+        try {
+            const [invRes, reqRes] = await Promise.all([
+                fetch(`${API_URL}/inventory`, { headers: { 'Authorization': `Bearer ${getToken()}` } }),
+                fetch(`${API_URL}/requests`)
+            ]);
+            const inventory = await invRes.json();
+            const requests = await reqRes.json();
+            
+            const stockGroups = new Set(inventory.filter(i => i.units_available > 0).map(i => i.blood_group));
+            const matching = requests.filter(r => stockGroups.has(r.blood_group));
+            
+            const el = document.getElementById('matchingRequests');
+            if (matching.length === 0) {
+                el.innerHTML = '<p style="color:var(--text-muted);font-size:0.85rem;">No matching requests right now.</p>';
+                return;
+            }
+            el.innerHTML = matching.map(r => `
+                <div class="list-item" style="flex-direction:column;align-items:stretch;gap:0.4rem;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;">
+                        <h4 style="font-size:0.9rem;">${r.name}</h4>
+                        <span class="badge ${r.urgency === 'critical' ? 'badge-urgent' : 'badge-warning'}">${r.urgency.toUpperCase()}</span>
+                    </div>
+                    <span style="font-size:0.8rem;color:var(--text-muted);">${r.blood_group} • ${r.units_required} unit(s) • 📞 ${r.phone}</span>
+                    <span style="font-size:0.75rem;color:var(--text-muted);">${timeAgo(r.created_at)}</span>
+                </div>
+            `).join('');
+        } catch(e) {}
+    }
+
+    document.getElementById('inventoryForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        try {
+            const res = await fetch(`${API_URL}/inventory`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${getToken()}` },
+                body: JSON.stringify({
+                    blood_group: document.getElementById('invBlood').value,
+                    units: parseInt(document.getElementById('invUnits').value)
+                })
+            });
+            const data = await res.json();
+            if (res.ok) { showAlert('Stock updated!', 'success'); loadInventory(); }
+            else showAlert(data.error);
+        } catch(err) { showAlert('Server error'); }
+    });
+
+    function toggleNotifs() {
+        const dd = document.getElementById('notifDropdown');
+        dd.classList.toggle('active');
+        if (dd.classList.contains('active')) { loadNotifications(dd, document.getElementById('notifBadge')); markAllRead(); }
+    }
+    document.addEventListener('click', e => { if (!e.target.closest('.notif-bell')) document.getElementById('notifDropdown').classList.remove('active'); });
+
+    socket.on('new_request', () => loadMatchingRequests());
+
+    loadProfile();
+    loadInventory();
+    loadMatchingRequests();
+    loadNotifications(null, document.getElementById('notifBadge'));
+</script>
+</body>
+</html>

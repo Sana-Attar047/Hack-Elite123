@@ -1,0 +1,27 @@
+{
+  "name": "lifedrop-blood-donation",
+  "version": "1.0.0",
+  "description": "LifeDrop — Real-time Blood Donation & Emergency Finder Platform",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": ["blood-donation", "emergency", "healthcare"],
+  "author": "LifeDrop Team",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "express-rate-limit": "^7.5.0",
+    "helmet": "^8.1.0",
+    "jsonwebtoken": "^9.0.3",
+    "mysql2": "^3.22.3",
+    "nodemailer": "^6.10.1",
+    "socket.io": "^4.8.3"
+  }
+}

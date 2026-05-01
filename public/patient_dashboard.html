@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patient Dashboard — LifeDrop</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+</head>
+<body>
+<div class="container">
+    <nav>
+        <a href="#" class="logo">🩸 Life<span>Drop</span> — Patient</a>
+        <div class="nav-links">
+            <div class="notif-bell" onclick="toggleNotifs()" style="position:relative;">
+                🔔<span class="notif-badge" id="notifBadge" style="display:none;">0</span>
+                <div class="notif-dropdown" id="notifDropdown"></div>
+            </div>
+            <a href="#" onclick="logout()">Logout</a>
+        </div>
+    </nav>
+    <div id="alertMsg" class="alert"></div>
+
+    <div class="dashboard-grid">
+        <!-- Emergency Broadcast -->
+        <div>
+            <div class="glass-card" style="margin-bottom:1.5rem;text-align:center;">
+                <h2>🚨 Emergency SOS</h2>
+                <p style="color:var(--text-muted);font-size:0.85rem;margin:0.5rem 0 1rem;">One-tap to alert all nearby compatible donors</p>
+                <button class="sos-btn" id="sosBtn" onclick="showSOSForm()">
+                    <span class="sos-icon">🆘</span>
+                    <span class="sos-text">SOS Alert</span>
+                </button>
+            </div>
+
+            <!-- SOS Form (hidden by default) -->
+            <div class="glass-card" id="sosFormCard" style="margin-bottom:1.5rem;display:none;">
+                <h2>Broadcast Emergency</h2>
+                <p style="color:var(--text-muted);font-size:0.85rem;margin:0.3rem 0 1rem;">Max 4 units per request</p>
+                <form id="emergencyForm">
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;">
+                        <div class="form-group">
+                            <label>Units (1-4)</label>
+                            <input type="number" id="reqUnits" min="1" max="4" required value="1">
+                        </div>
+                        <div class="form-group">
+                            <label>Blood Group</label>
+                            <select id="reqBlood" required>
+                                <option value="A+">A+</option><option value="A-">A-</option>
+                                <option value="B+">B+</option><option value="B-">B-</option>
+                                <option value="AB+">AB+</option><option value="AB-">AB-</option>
+                                <option value="O+">O+</option><option value="O-">O-</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;">
+                        <div class="form-group">
+                            <label>Urgency</label>
+                            <select id="reqUrgency">
+                                <option value="critical">🔴 Critical</option>
+                                <option value="high" selected>🟡 High</option>
+                                <option value="normal">🔵 Normal</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Hospital Name</label>
+                            <input type="text" id="reqHospital" placeholder="Optional">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Notes</label>
+                        <textarea id="reqNotes" placeholder="Any additional info..." rows="2"></textarea>
+                    </div>
+                    <button type="submit" class="btn btn-primary" id="broadcastBtn">📡 Broadcast Now</button>
+                </form>
+            </div>
+
+            <!-- My Requests -->
+            <div class="glass-card">
+                <h2>My Requests</h2>
+                <div id="myRequests" style="margin-top:1rem;max-height:300px;overflow-y:auto;">
+                    <p style="color:var(--text-muted);font-size:0.85rem;">Loading...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Column -->
+        <div>
+            <!-- Map -->
+            <div class="glass-card" style="margin-bottom:1.5rem;">
+                <h2>Nearby Resources</h2>
+                <div id="patientMap" class="map-container"></div>
+            </div>
+
+            <!-- Search -->
+            <div class="glass-card">
+                <h2>Find Donors & Blood Banks</h2>
+                <div style="display:flex;gap:0.75rem;margin:1rem 0;">
+                    <select id="searchType" style="flex:1;">
+                        <option value="donor">Donors</option>
+                        <option value="blood_bank">Blood Banks</option>
+                    </select>
+                    <select id="searchBlood" style="flex:1;">
+                        <option value="">Any Group</option>
+                        <option value="A+">A+</option><option value="A-">A-</option>
+                        <option value="B+">B+</option><option value="B-">B-</option>
+                        <option value="AB+">AB+</option><option value="AB-">AB-</option>
+                        <option value="O+">O+</option><option value="O-">O-</option>
+                    </select>
+                </div>
+                <button onclick="searchResources()" class="btn btn-accent" style="margin-bottom:1rem;">🔍 Search Nearby</button>
+                <div id="searchResults" style="max-height:300px;overflow-y:auto;"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="js/app.js"></script>
+<script>
+    checkAuth();
+    let patientMap = null;
+
+    function showSOSForm() {
+        const card = document.getElementById('sosFormCard');
+        card.style.display = card.style.display === 'none' ? 'block' : 'none';
+    }
+
+    let userLoc = null;
+
+    async function initMap() {
+        try {
+            userLoc = await getUserLocation();
+            patientMap = L.map('patientMap').setView([userLoc.lat, userLoc.lng], 12);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(patientMap);
+            L.marker([userLoc.lat, userLoc.lng]).addTo(patientMap).bindPopup('📍 You are here');
+        } catch(e) {
+            // Show info banner, not error
+            const alertBox = document.getElementById('alertMsg');
+            alertBox.innerHTML = '📍 <strong>Tip:</strong> Allow location access in your browser (click 🔒 icon in address bar → Location → Allow) for the best experience.';
+            alertBox.className = 'alert success';
+            alertBox.style.display = 'block';
+            alertBox.style.background = 'rgba(56,189,248,0.15)';
+            alertBox.style.borderColor = 'rgba(56,189,248,0.3)';
+            alertBox.style.color = '#bae6fd';
+            patientMap = L.map('patientMap').setView([20.5937, 78.9629], 5);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(patientMap);
+        }
+    }
+
+    // Emergency broadcast
+    document.getElementById('emergencyForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const units = parseInt(document.getElementById('reqUnits').value);
+        if (units < 1 || units > 4) return showAlert('Units must be 1-4');
+
+        const btn = document.getElementById('broadcastBtn');
+        btn.innerHTML = '<span class="spinner"></span> Broadcasting...';
+        btn.disabled = true;
+
+        try {
+            let loc = { lat: null, lng: null };
+            try { loc = await getUserLocation(); } catch(e) { console.log('GPS unavailable, broadcasting without location'); }
+            const res = await fetch(`${API_URL}/requests`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${getToken()}` },
+                body: JSON.stringify({
+                    units_required: units,
+                    blood_group: document.getElementById('reqBlood').value,
+                    urgency: document.getElementById('reqUrgency').value,
+                    latitude: loc.lat,
+                    longitude: loc.lng,
+                    hospital_name: document.getElementById('reqHospital').value || null,
+                    notes: document.getElementById('reqNotes').value || null
+                })
+            });
+            const data = await res.json();
+            if (res.ok) {
+                showAlert(`Emergency broadcast sent! ${data.donors_notified} donors notified.`, 'success');
+                playSOSBeep();
+                loadMyRequests();
+                document.getElementById('sosFormCard').style.display = 'none';
+                document.getElementById('emergencyForm').reset();
+            } else showAlert(data.error);
+        } catch(err) {
+            showAlert('Failed to broadcast. Please try again.');
+        }
+        btn.innerHTML = '📡 Broadcast Now';
+        btn.disabled = false;
+    });
+
+    async function loadMyRequests() {
+        try {
+            const res = await fetch(`${API_URL}/requests/mine`, {
+                headers: { 'Authorization': `Bearer ${getToken()}` }
+            });
+            const data = await res.json();
+            const el = document.getElementById('myRequests');
+            if (data.length === 0) {
+                el.innerHTML = '<p style="color:var(--text-muted);font-size:0.85rem;">No requests yet.</p>';
+                return;
+            }
+            el.innerHTML = data.map(r => `
+                <div class="list-item" style="flex-direction:column;align-items:stretch;gap:0.4rem;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;">
+                        <span><strong>${r.blood_group}</strong> • ${r.units_required} unit(s)</span>
+                        <span class="badge ${r.status === 'fulfilled' ? 'badge-success' : r.status === 'cancelled' ? 'badge-normal' : 'badge-urgent'}">
+                            ${r.status === 'fulfilled' ? '✅ Fulfilled' : r.status === 'cancelled' ? 'Cancelled' : `${r.units_fulfilled}/${r.units_required} filled`}
+                        </span>
+                    </div>
+                    <span style="font-size:0.78rem;color:var(--text-muted);">${r.urgency.toUpperCase()} • ${timeAgo(r.created_at)}</span>
+                    ${r.status === 'pending' ? `<button class="btn btn-outline btn-sm" onclick="cancelRequest(${r.id})">Cancel</button>` : ''}
+                </div>
+            `).join('');
+        } catch(e) {}
+    }
+
+    async function cancelRequest(id) {
+        try {
+            await fetch(`${API_URL}/requests/${id}/cancel`, {
+                method: 'PUT', headers: { 'Authorization': `Bearer ${getToken()}` }
+            });
+            showAlert('Request cancelled.', 'success');
+            loadMyRequests();
+        } catch(e) { showAlert('Failed to cancel'); }
+    }
+
+    async function searchResources() {
+        const type = document.getElementById('searchType').value;
+        const bg = document.getElementById('searchBlood').value;
+        const div = document.getElementById('searchResults');
+        div.innerHTML = '<p style="color:var(--text-muted);text-align:center;"><span class="spinner"></span> Searching...</p>';
+
+        // Try to get location, or use cached/fallback
+        let loc = userLoc;
+        if (!loc) {
+            try { loc = await getUserLocation(); userLoc = loc; } catch(e) {}
+        }
+        if (!loc) {
+            div.innerHTML = '<p style="color:#bae6fd;text-align:center;font-size:0.85rem;">📍 Please allow location access in your browser to search nearby resources.<br><small style="color:var(--text-muted);">Click the 🔒 icon in the address bar → Location → Allow, then refresh.</small></p>';
+            return;
+        }
+
+        try {
+            let url = `${API_URL}/search?lat=${loc.lat}&lng=${loc.lng}&type=${type}`;
+            if (bg) url += `&blood_group=${encodeURIComponent(bg)}`;
+
+            const res = await fetch(url);
+            const data = await res.json();
+            div.innerHTML = '';
+
+            if (data.length === 0) {
+                div.innerHTML = '<p style="color:var(--text-muted);text-align:center;">No results found nearby.</p>';
+                return;
+            }
+
+            // Add markers to map
+            data.forEach(item => {
+                if (item.latitude && item.longitude && patientMap) {
+                    const icon = L.divIcon({
+                        html: `<div style="background:${type === 'blood_bank' ? '#38bdf8' : '#22c55e'};width:10px;height:10px;border-radius:50%;border:2px solid white;"></div>`,
+                        iconSize: [10, 10], className: ''
+                    });
+                    L.marker([item.latitude, item.longitude], { icon }).addTo(patientMap)
+                        .bindPopup(`<b>${item.name}</b><br>${item.blood_group || ''} ${item.units_available ? item.units_available + ' units' : ''}`);
+                }
+
+                const dist = parseFloat(item.distance).toFixed(1);
+                const extra = type === 'blood_bank' ? `${item.units_available} units` : item.blood_group;
+                div.innerHTML += `
+                    <div class="list-item">
+                        <div>
+                            <h4 style="margin-bottom:0.2rem;font-size:0.9rem;">${item.name}</h4>
+                            <p style="font-size:0.78rem;color:var(--text-muted);">📞 ${item.phone} • 📍 ${dist} km</p>
+                        </div>
+                        <span class="badge ${type === 'blood_bank' ? 'badge-normal' : 'badge-success'}">${extra}</span>
+                    </div>
+                `;
+            });
+        } catch(err) {
+            div.innerHTML = '<p style="color:var(--text-muted);text-align:center;">Search failed. Please try again.</p>';
+        }
+    }
+
+    function toggleNotifs() {
+        const dd = document.getElementById('notifDropdown');
+        dd.classList.toggle('active');
+        if (dd.classList.contains('active')) { loadNotifications(dd, document.getElementById('notifBadge')); markAllRead(); }
+    }
+    document.addEventListener('click', e => { if (!e.target.closest('.notif-bell')) document.getElementById('notifDropdown').classList.remove('active'); });
+
+    socket.on('request_fulfilled', () => loadMyRequests());
+    socket.on('request_updated', () => loadMyRequests());
+
+    initMap();
+    loadMyRequests();
+    loadNotifications(null, document.getElementById('notifBadge'));
+</script>
+</body>
+</html>
